@@ -1,45 +1,98 @@
+import sqlite3
 import streamlit as st
-from datetime import datetime
-from models import Task
-from db_handler import init_db, add_task, get_tasks, update_task
-from pydantic import ValidationError
+from pydantic import BaseModel
+import streamlit_pydantic as sp
+from typing import Literal, List
+import datetime
 
-# Initialize the database
-init_db()
+# Connect to SQLite database
+con = sqlite3.connect("ToDoList.sqlite", isolation_level=None)
+cur = con.cursor()
 
-# Streamlit app layout
-st.title('Todo App')
+# Create the table
+cur.execute(
+    """
+    CREATE TABLE IF NOT EXISTS tasks (
+        id INTEGER PRIMARY KEY,
+        task TEXT,
+        description TEXT,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        created_by TEXT DEFAULT "Jackie",
+        category TEXT,
+        is_done BOOLEAN DEFAULT FALSE
+    )
+    """
+)
 
-# Task input form
-with st.form(key='task_form'):
-    name = st.text_input('Task Name')
-    description = st.text_area('Description')
-    created_by = st.text_input('Created By')
-    category = st.selectbox('Category', ['Personal', 'Work', 'Other'], index=0)
-    submit_button = st.form_submit_button('Submit')
+# Define our Form
+class Task(BaseModel):
+    name: str
+    description: str
+    created_at: datetime.datetime
+    created_by: str = "Jackie"
+    category: Literal['School', 'Work', 'Personal']
+    is_done: bool
 
-if submit_button:
-    try:
-        # Manual data validation using Pydantic
-        task_data = Task(
-            name=name,
-            description=description,
-            is_done=False,  # default value
-            created_at=datetime.now(),  # set current time as creation time
-            created_by=created_by,
-            category=category
+# This function will be called when the check mark is toggled, this is called a callback function
+def toggle_is_done(is_done, row):
+    cur.execute(
+        """
+        UPDATE tasks SET is_done = ? WHERE id = ?
+        """,
+        (is_done, row),
+    )
+
+# This function will be called when the delete button is clicked
+def delete_task(row):
+    cur.execute(
+        """
+        DELETE FROM tasks WHERE id = ?
+        """,
+        (row,),
+    )
+
+def main():
+    st.title("ToDoList")
+
+    # Create a Form using the streamlit-pydantic package, just pass it the Task Class
+    data = sp.pydantic_form(key="task_form", model=Task)
+
+    if data:
+        # Convert created_at to the appropriate string format for SQLite TIMESTAMP
+        created_at_str = data.created_at.strftime("%Y-%m-%d %H:%M:%S")
+        cur.execute(
+            """
+            INSERT INTO tasks (task, description, created_at, created_by, category, is_done)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (data.name, data.description, created_at_str, data.created_by, data.category, data.is_done),
         )
-        add_task(task_data)
-        st.success('Task added successfully!')
-    except ValidationError as e:
-        st.error('Task creation failed: ' + str(e))
 
-# Display tasks
-st.header('Tasks')
-tasks = get_tasks()
-for task in tasks:
-    col1, col2 = st.columns([0.8, 0.2])
-    col1.write(f'{task.name} - {task.description}')
-    if col2.button('Done', key=str(task.id)):  # Convert task.id to string to use as key
-        update_task(task.id, True)
+    tasks = cur.execute(
+        """
+        SELECT * FROM tasks
+        """
+    ).fetchall()
 
+    if tasks:
+        for row in tasks:
+            cols = st.columns([1, 3, 3, 2, 2, 2, 1, 1])
+            is_done = row[6]
+
+            # Checkbox for marking task as done
+            if cols[0].checkbox("", is_done, key=row[0]):
+                toggle_is_done(not is_done, row[0])
+
+            # Task details
+            cols[1].write(row[1])
+            cols[2].write(row[2])
+            cols[3].write(row[3])
+            cols[4].write(row[4])
+            cols[5].write(row[5])
+
+            # Delete button
+            if cols[5].button("Delete", key=f"delete-{row[0]}"):
+                delete_task(row[0])
+                st.experimental_rerun()
+
+main()
